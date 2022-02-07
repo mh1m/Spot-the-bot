@@ -13,16 +13,6 @@ from devon.devon import FSMStemmer
 
 STOPWORDS_ADD = ["a", "aa", "aaa", "aaaa", "aaaaa", "aaaaaa", "aaba"]
 
-def group_texts(dataframe: pd.DataFrame, text_column_name: str) -> pd.DataFrame:
-    df_page_ind = pd.DataFrame(dataframe['article_uuid'].unique(), columns=['article_uuid'])
-    df_page_ind = df_page_ind.reset_index().rename(columns={'index': 'pg_index'})
-    dataframe = dataframe.merge(df_page_ind, how='left', on='article_uuid')
-    dataframe = dataframe[[text_column_name, 'pg_index']]
-    dataframe = dataframe.groupby(by='pg_index').agg({text_column_name: ' '.join})
-    df_pg = dataframe.reset_index()
-    df_pg = df_pg.dropna()
-    return df_pg
-
 def _split_upper(word: str) -> list:
     upper_word_list = re.split("(?=[A-Z])", word)
     if upper_word_list[0] == "":
@@ -60,39 +50,55 @@ def _clean_pipline(words_list: np.ndarray) -> pd.Series:
     return words_list
 
 def clean_text(text: str, stop_words: list) -> str:
-    apostrofs = ["'", "ʻ", "ʼ"]
-    splited_text = re.findall(r"[A-Za-z 'ʻʼ]+", text)
-    words_list = np.array([], dtype=object)
+    splited_text = ' '.join(re.findall(r"[A-Za-z 'ʻʼ.]+", text)).split(sep='.')
+    clean_text = ""
     for sentence in splited_text:
+        sentence_array = np.array([], dtype=object)
         sentence_word_list = sentence.split()
         for word in sentence_word_list:
             splited_word_list = _split_upper(word)
-            words_list = np.append(words_list, splited_word_list)
-    clean_words = _clean_pipline(words_list)
-    return ' '.join(clean_words.values)
+            sentence_array = np.append(sentence_array, splited_word_list)
+        if sentence_array.shape[0] == 0:
+            continue
+        clean_sentence = _clean_pipline(sentence_array)
+        clean_sentence_text = ' '.join(clean_sentence.values)
+        if clean_sentence_text == '':
+            continue
+        clean_text += ' '.join(clean_sentence_text.split())
+        clean_text += '. '
+    return clean_text
+
+def reshape_dataframe_by_dot_split(dataframe: pd.DataFrame, text_column: str) -> pd.DataFrame:
+    result = pd.DataFrame(columns=['article_index', text_column])
+    for i in tqdm(range(dataframe.shape[0])):
+        lambda_ = lambda text: ' '.join(text.split())
+        sentences = list(map(lambda_, dataframe.loc[i, text_column].split(sep='.')))
+        for sentence in sentences:
+            if sentence == '':
+                continue
+            result = result.append({'article_index': i,
+                                    text_column: sentence}, ignore_index=True)
+    return result
 
 
-# Group data by page (pg_index)
-
-dataframe = pd.read_csv("UzWikiTexts.csv")
+df_wiki_texts = pd.read_csv("UzWikiTexts.csv")
 stop_words = json.load(open("UzStopWords.json")) + STOPWORDS_ADD
-df_grouped_texts = group_texts(dataframe, 'sentence')
-
-# Since we need to get a corpus of 10,000 documents, it is permissible that each document contains at least 150 words.
-
-lambda_ = lambda text: len(text.split()) > 150
-df_grouped_texts = df_grouped_texts[df_grouped_texts['sentence'].apply(lambda_)].reset_index(drop=True)
 
 # Clean Texts
 
 lambda_ = lambda text: clean_text(text, stop_words)
-df_grouped_texts['clean_text'] = df_grouped_texts.loc[:, 'sentence'].apply(lambda_)
-df_grouped_texts = df_grouped_texts.dropna()
-df_uz_corpus = df_grouped_texts[['pg_index', 'clean_text']]
+df_wiki_texts['clean_text'] = df_wiki_texts.loc[:, 'article'].apply(lambda_)
+df_wiki_texts = df_wiki_texts.dropna()
 
-# Let's do the same again. After cleaning the texts, the number of words could decrease
+# Since we need to get a corpus of ~10,000 documents, it is permissible that each document contains at least 130 words.
 
 lambda_ = lambda text: len(text.split()) > 130
-df_uz_corpus = df_uz_corpus[df_uz_corpus['clean_text'].apply(lambda_)].reset_index(drop=True)
+df_corpus = df_wiki_texts[df_wiki_texts['clean_text'].apply(lambda_)].reset_index(drop=True)
+df_clean_corpus = df_corpus[['clean_text']]
+
+df_corpus_dot_split = reshape_dataframe_by_dot_split(df_clean_corpus, 'clean_text')
+df_corpus_dot_split.to_csv("UzCleanCorpusDotSplit.csv", index=False)
+
+df_uz_corpus = df_corpus_dot_split.groupby(by='article_index').agg({'clean_text': ' '.join}).reset_index()
 
 df_uz_corpus.to_csv("UzCleanCorpus.csv", index=False)
