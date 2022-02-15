@@ -9,7 +9,9 @@ Representing words using word-to-vec transformation allows you to match a natura
 4. TF-IDF vectorization of the cleaned corpus of texts
 5. SVD decomposition of TF-IDF matrix. Getting a [dictionary of words](https://drive.google.com/file/d/1gHR9wJ6eXoPBmU8NMJjtQCHuF0_tnLOn/view?usp=sharing) {word: vector}
 6. Words are replaced by vectors, n-grams are taken and a data set is obtained
+7. Compilation of Data-driven graphs
 ## Plan:
-1. Compilation of Data-driven graphs
-2. Data-driven graph analysis
-3. ...
+1. Data-driven graph analysis
+2. Create LSTM bot
+3. Create clustering algorithm
+4. ...
