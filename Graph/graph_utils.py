@@ -122,8 +122,8 @@ class Graph:
                 edges.add((word, neighbor))
         return edges
     
-    def get_other_words(self, word: str) -> set:
-        return set(self.get_words()).difference(set([word]))
+    def get_other_words(self, *words) -> set:
+        return set(self.get_words()).difference(set(words))
     
     def add_edge(self, first_word: str, second_word: str):
         self.vertices[first_word].neighbors.add(second_word)
@@ -192,20 +192,31 @@ class Graph:
 
 
 '''
-Граф ε-окружности (ε-ball)
+Параллелизация графов
 '''
 
+
 @ray.remote
-class EBallParallel(Graph):
+class Parallel(Graph):
     def __init__(self, vertices: dict):
         super().__init__(vertices)
-        self.parallel = set()
+        self.__parallel = set()
+        
+    @property
+    def parallel(self):
+        return self.__parallel
+    
+    @parallel.setter
+    def parallel(self, parallel: set):
+        self.__parallel = copy.deepcopy(parallel)
         
     def add_parallel_word(self, word: str):
         self.parallel.add(word)
-                    
+        
+    def add_parallel_triangle(self, triangle: set):
+        self.parallel.add(tuple(triangle))
+
     def parallel_eball_graph(self, epsilon: float) -> dict:
-        self.reset_graph_neighbors()
         for first_word in tqdm(self.parallel):
             other_words = self.get_other_words(first_word)
             for second_word in other_words:
@@ -213,6 +224,65 @@ class EBallParallel(Graph):
                 if distance < epsilon:
                     self.add_edge(first_word, second_word)
         return self.vertices
+    
+    def is_neighbor_in_edge_sphere_gromov(self, edge: tuple, neighbor: str) -> bool:
+        edge_length = self.euclid_distance(edge[0], edge[1])
+        first_to_neighbor = self.euclid_distance(edge[0], neighbor)
+        second_to_neighbor = self.euclid_distance(edge[1], neighbor)
+        if edge_length < math.sqrt(first_to_neighbor ** 2 + second_to_neighbor ** 2):
+            return False
+        return True
+    
+    def is_neighbor_in_edge_sphere(self, edge: tuple, neighbor: str) -> bool:
+        sphere_center = (self.vertices[edge[0]].vector + self.vertices[edge[1]].vector) / 2
+        radius = self.euclid_distance_to_vector(edge[0], sphere_center)
+        if self.euclid_distance_to_vector(neighbor, sphere_center) < radius:
+            return True
+        return False
+    
+    def parallel_gabriel_graph(self) -> dict:
+        for triangle in tqdm(self.parallel):
+            edges = list(itertools.combinations(triangle, 2))
+            for edge in edges:
+                neighbors = set(triangle).difference(set(edge))
+                for neighbor in neighbors:
+                    if self.is_neighbor_in_edge_sphere(edge, neighbor):
+                        self.delete_edge(edge[0], edge[1])
+        return self.vertices
+    
+    def parallel_rn_graph(self) -> dict:
+        for word in tqdm(self.parallel):
+            neighbors = copy.deepcopy(self.vertices[word].neighbors)
+            for neighbor in neighbors:
+                for other_word in self.get_other_words(word, neighbor):
+                    word_to_neighbor_distance = self.euclid_distance(word, neighbor)
+                    word_to_other_word_distance = self.euclid_distance(word, other_word)
+                    neighbor_to_other_word_distance = self.euclid_distance(neighbor, other_word)
+                    if max(word_to_other_word_distance, neighbor_to_other_word_distance) <= word_to_neighbor_distance:
+                        self.delete_edge(word, neighbor)
+        return self.vertices
+    
+    def parallel_influence_graph(self) -> dict:
+        for first_word in tqdm(self.parallel):
+            first_radius = self.get_sphere_radius(first_word)
+            for second_word in self.get_other_words(first_word):
+                second_radius = self.get_sphere_radius(second_word)
+                distance = self.euclid_distance(first_word, second_word)
+                if distance <= first_radius + second_radius:
+                    self.add_edge(first_word, second_word)
+        return self.vertices
+    
+    def parallel_nn_graph(self, k: int) -> dict:
+        for word in tqdm(self.parallel):
+            knn_list = self.get_knn(word, k)
+            for neighbor in knn_list:
+                self.add_edge(word, neighbor)
+        return self.vertices
+
+
+'''
+Граф ε-окружности (ε-ball)
+'''
     
     
 class EBall(Graph):
@@ -228,14 +298,17 @@ class EBall(Graph):
                 if distance < epsilon:
                     self.add_edge(first_word, second_word)
     
-    def create_parallel_eball_graph(self, epsilon: float, num_cpus: int):
+    def create_parallel_eball_graph(self, epsilon: float):
         self.reset_graph_neighbors()
-        streaming_actors = [EBallParallel.remote(self.vertices) for _ in range(num_cpus)]
+        num_cpus = psutil.cpu_count(logical=False)
+        ray.init(num_cpus=num_cpus)
+        streaming_actors = [Parallel.remote(self.vertices) for _ in range(num_cpus)]
         for index, word in enumerate(self.get_words()):
             streaming_actors[index % num_cpus].add_parallel_word.remote(word)
         results = ray.get([
             actor.parallel_eball_graph.remote(epsilon) for actor in streaming_actors
         ])
+        ray.shutdown()
         for parallel_vertices in results:
             for word in self.get_words():
                 self.vertices[word].neighbors.update(parallel_vertices[word].neighbors)
@@ -301,9 +374,9 @@ class GG(Graph):
         return False
     
     def create_gabriel_graph(self):
-        print("delaunay start...")
+        print("Delaunay start...")
         self.create_delaunay_graph()
-        print("delaunay done!")
+        print("Delaunay done!")
         for triangle in tqdm(self.triangles):
             edges = list(itertools.combinations(triangle, 2))
             for edge in edges:
@@ -311,6 +384,23 @@ class GG(Graph):
                 for neighbor in neighbors:
                     if self.is_neighbor_in_edge_sphere(edge, neighbor):
                         self.delete_edge(edge[0], edge[1])
+    
+    def create_parallel_gabriel_graph(self):
+        print("Delaunay start...")
+        self.create_delaunay_graph()
+        print("Delaunay done!")
+        num_cpus = psutil.cpu_count(logical=False)
+        ray.init(num_cpus=num_cpus)
+        streaming_actors = [Parallel.remote(self.vertices) for _ in range(num_cpus)]
+        for index, triangle in enumerate(self.triangles):
+            streaming_actors[index % num_cpus].add_parallel_triangle.remote(triangle)
+        results = ray.get([
+            actor.parallel_gabriel_graph.remote() for actor in streaming_actors
+        ])
+        ray.shutdown()
+        for parallel_vertices in results:
+            for word in self.get_words():
+                self.vertices[word].neighbors.intersection_update(parallel_vertices[word].neighbors)
 
 
 '''
@@ -330,14 +420,29 @@ class RNG(GG):
         for word in tqdm(self.vertices.keys()):
             neighbors = copy.deepcopy(self.vertices[word].neighbors)
             for neighbor in neighbors:
-                for other_word in self.get_other_words(word):
-                    if neighbor == other_word:
-                        continue
+                for other_word in self.get_other_words(word, neighbor):
                     word_to_neighbor_distance = self.euclid_distance(word, neighbor)
                     word_to_other_word_distance = self.euclid_distance(word, other_word)
                     neighbor_to_other_word_distance = self.euclid_distance(neighbor, other_word)
                     if max(word_to_other_word_distance, neighbor_to_other_word_distance) <= word_to_neighbor_distance:
                         self.delete_edge(word, neighbor)
+                        
+    def create_parallel_rn_graph(self):
+        print("Gabriel start...")
+        self.create_parallel_gabriel_graph()
+        print("Gabriel done!")
+        num_cpus = psutil.cpu_count(logical=False)
+        ray.init(num_cpus=num_cpus)
+        streaming_actors = [Parallel.remote(self.vertices) for _ in range(num_cpus)]
+        for index, word in enumerate(self.vertices):
+            streaming_actors[index % num_cpus].add_parallel_word.remote(word)
+        results = ray.get([
+            actor.parallel_rn_graph.remote() for actor in streaming_actors
+        ])
+        ray.shutdown()
+        for parallel_vertices in results:
+            for word in self.get_words():
+                self.vertices[word].neighbors.intersection_update(parallel_vertices[word].neighbors)
 
 
 '''
@@ -360,6 +465,21 @@ class IG(Graph):
                 if distance <= first_radius + second_radius:
                     self.add_edge(first_word, second_word)
 
+    def create_parallel_influence_graph(self):
+        self.reset_graph_neighbors()
+        num_cpus = psutil.cpu_count(logical=False)
+        ray.init(num_cpus=num_cpus)
+        streaming_actors = [Parallel.remote(self.vertices) for _ in range(num_cpus)]
+        for index, word in enumerate(self.vertices):
+            streaming_actors[index % num_cpus].add_parallel_word.remote(word)
+        results = ray.get([
+            actor.parallel_influence_graph.remote() for actor in streaming_actors
+        ])
+        ray.shutdown()
+        for parallel_vertices in results:
+            for word in self.get_words():
+                self.vertices[word].neighbors.update(parallel_vertices[word].neighbors)
+
 
 '''
 Граф k-ближайших соседей (NNG)
@@ -376,3 +496,18 @@ class NNG(Graph):
             knn_list = self.get_knn(word, k)
             for neighbor in knn_list:
                 self.add_edge(word, neighbor)
+                
+    def create_parallel_nn_graph(self, k: int):
+        self.reset_graph_neighbors()
+        num_cpus = psutil.cpu_count(logical=False)
+        ray.init(num_cpus=num_cpus)
+        streaming_actors = [Parallel.remote(self.vertices) for _ in range(num_cpus)]
+        for index, word in enumerate(self.vertices):
+            streaming_actors[index % num_cpus].add_parallel_word.remote(word)
+        results = ray.get([
+            actor.parallel_nn_graph.remote(k) for actor in streaming_actors
+        ])
+        ray.shutdown()
+        for parallel_vertices in results:
+            for word in self.get_words():
+                self.vertices[word].neighbors.update(parallel_vertices[word].neighbors)
