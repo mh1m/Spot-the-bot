@@ -6,6 +6,7 @@ Import
 
 import re
 import nltk
+import pickle
 import numpy as np
 import pandas as pd
 from razdel import sentenize
@@ -13,17 +14,21 @@ from natasha import Doc, MorphVocab, Segmenter, NewsEmbedding, NewsMorphTagger, 
 from nltk.stem import WordNetLemmatizer
 from nltk.corpus import wordnet
 from nltk.tokenize import sent_tokenize
+from pymystem3 import Mystem
+import spacy
+from textblob import Word
 
+ENG_LEMMATIZER = spacy.load('en_core_web_sm')
 
 
 def _remove_html_tags(text: str) -> str:
     '''
     Remove HTML tags
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     text : str
@@ -34,11 +39,11 @@ def _remove_html_tags(text: str) -> str:
 def _remove_http_urls(text: str) -> str:
     '''
     Remove HTTP urls
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     text : str
@@ -48,11 +53,11 @@ def _remove_http_urls(text: str) -> str:
 def _remove_www_urls(text: str) -> str:
     '''
     Remove WWW urls
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     text : str
@@ -62,12 +67,12 @@ def _remove_www_urls(text: str) -> str:
 def _remove_special_chars(text: str, chars: list) -> str:
     '''
     Remove special chars
-    
+
     Parameters
     ----------
     text : str
     chars : list
-    
+
     Returns
     -------
     text : str
@@ -79,13 +84,13 @@ def _remove_special_chars(text: str, chars: list) -> str:
 def remove_web(text: str, chars: list) -> str:
     '''
     Remove web from text
-    
+
     Parameters
     ----------
     text : str
     chars : list
     Special chars to remove
-    
+
     Returns
     -------
     text : str
@@ -99,13 +104,13 @@ def remove_web(text: str, chars: list) -> str:
 def process_book(book_path: str, chars: list) -> str:
     '''
     Read book with simple processing
-    
+
     Parameters
     ----------
     book_path : str
     chars : list
     Special chars to remove
-    
+
     Returns
     -------
     book : str
@@ -128,11 +133,11 @@ Cleaning
 def _ru_clean_text_for_sentenize(text: str) -> str:
     '''
     Clean text to sentence
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     text : str
@@ -145,11 +150,11 @@ def _ru_clean_text_for_sentenize(text: str) -> str:
 def _ru_text_sentenize(text: str) -> list:
     '''
     Text sentenize
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     sentences : list
@@ -157,15 +162,15 @@ def _ru_text_sentenize(text: str) -> list:
     '''
     sentences = list(map(lambda sentence: sentence.text, sentenize(text)))
     return sentences
-    
+
 def _ru_split_upper(word: str) -> list:
     '''
     Split upper words
-    
+
     Parameters
     ----------
     word or text : str
-    
+
     Returns
     -------
     Upper words : list
@@ -179,13 +184,13 @@ def _ru_split_upper(word: str) -> list:
 def _delete_short_long_words(text: str, length_threshold: tuple) -> str:
     '''
     Delete short words
-    
+
     Parameters
     ----------
     text : str
     length_threshold : tuple
     Min and max thresholds
-    
+
     Returns
     -------
     text : str
@@ -201,12 +206,12 @@ def _delete_short_long_words(text: str, length_threshold: tuple) -> str:
 def _ru_clean_sentence(sentence: str, length_threshold: tuple) -> str:
     '''
     Clean sentence
-    
+
     Parameters
     ----------
     sentence : str
     length_threshold: int
-    
+
     Returns
     -------
     sentence : str
@@ -221,11 +226,11 @@ def _ru_clean_sentence(sentence: str, length_threshold: tuple) -> str:
 def _natasha_ner_clean(text: str) -> str:
     '''
     Clean text from NER
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     text : list
@@ -243,15 +248,15 @@ def _natasha_ner_clean(text: str) -> str:
         text_without_ner = text_without_ner.replace(span_text, '')
     return text_without_ner
 
-def ru_clean_text(text: str, length_threshold: tuple) -> list:
+def ru_clean_text(text: str, length_threshold: tuple = (2, 30)) -> list:
     '''
     Clean text
-    
+
     Parameters
     ----------
     text : str
     length_threshold: int
-    
+
     Returns
     -------
     text : list
@@ -270,11 +275,11 @@ def ru_clean_text(text: str, length_threshold: tuple) -> list:
 def natasha_lemmatize(text: str) -> str:
     '''
     Lemmatize text
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     text : str
@@ -290,16 +295,34 @@ def natasha_lemmatize(text: str) -> str:
     for token in doc.tokens:
         token.lemmatize(morph_vocab)
     return ' '.join([_.lemma for _ in doc.tokens])
-    
+
+def mystem_lemmatize(text: str) -> str:
+    mystem_analyzer = Mystem()
+    lemmatized_text = []
+    analysis = mystem_analyzer.analyze(text)
+    for word_analysis in analysis:
+        try:
+            if 'analysis' in word_analysis.keys():
+                if 'qual' in word_analysis['analysis'][0].keys():
+                    if word_analysis['analysis'][0]['qual'] == 'bastard':
+                        continue
+                word_lemma = word_analysis['analysis'][0]['lex']
+                lemmatized_text.append(word_lemma)
+            elif word_analysis['text'] == '.':
+                lemmatized_text.append('.')
+        except Exception:
+            print(word_analysis)
+    return ' '.join(lemmatized_text)
+
 def delete_stop_words(text: str, stopwords: list) -> str:
     '''
     Delete stop words
-    
+
     Parameters
     ----------
     text : str
     stopwords : list
-    
+
     Returns
     -------
     text : str
@@ -311,25 +334,28 @@ def delete_stop_words(text: str, stopwords: list) -> str:
             output.append(word)
     return ' '.join(output)
 
-def ru_preprocess_text(text: str, stopwords: list, length_threshold: int) -> list:
+def ru_preprocess_text(text: str,
+                       stopwords: list,
+                       length_threshold: tuple = (2, 30),
+                       lemmatizator=mystem_lemmatize) -> list:
     '''
     Preprocess text
-    
+
     Parameters
     ----------
     text : str
     stopwords : list
     length_threshold : int
-    
+
     Returns
     -------
     text : list
     Preprocessed list of sentences (lemmatized, without stopwords, short words and punktuation)
     '''
     text = ' . '.join(ru_clean_text(text, length_threshold))
-    text = natasha_lemmatize(text)
+    text = lemmatizator(text)
     output = []
-    for sentence in text.split(sep=' . '):
+    for sentence in text.split(sep='.'):
         sentence = delete_stop_words(sentence, stopwords)
         if sentence:
             output.append(sentence)
@@ -338,11 +364,11 @@ def ru_preprocess_text(text: str, stopwords: list, length_threshold: int) -> lis
 def _eng_clean_text_for_sentenize(text: str) -> str:
     '''
     Clean text to sentence
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     text : str
@@ -352,29 +378,33 @@ def _eng_clean_text_for_sentenize(text: str) -> str:
     text = re.sub(r"(?<=[.…,?!\":–;])(?=[^\s])", r' ', text)
     return text
 
+
+with open("eng_sent_tokenize.pickle", 'rb') as f:
+    tokenizer = pickle.load(f)
+
 def _eng_text_sentenize(text: str) -> list:
     '''
     Text sentenize
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     sentences : list
     List of sentences with punktuation
     '''
-    return sent_tokenize(text)
+    return tokenizer.tokenize(text)
 
 def _eng_split_upper(word: str) -> list:
     '''
     Split upper words
-    
+
     Parameters
     ----------
     word or text : str
-    
+
     Returns
     -------
     Upper words : list
@@ -385,15 +415,15 @@ def _eng_split_upper(word: str) -> list:
         return upper_word_list
     return upper_word_list[1:]
 
-def _eng_clean_sentence(sentence: str, length_threshold: int) -> str:
+def _eng_clean_sentence(sentence: str, length_threshold: tuple) -> str:
     '''
     Clean sentence
-    
+
     Parameters
     ----------
     sentence : str
     length_threshold: int
-    
+
     Returns
     -------
     sentence : str
@@ -402,18 +432,18 @@ def _eng_clean_sentence(sentence: str, length_threshold: int) -> str:
     sentence = ' '.join(re.findall(r"[A-Za-z]+", sentence))
     sentence = ' '.join(_eng_split_upper(sentence))
     sentence = sentence.lower()
-    sentence = _delete_short_words(sentence, length_threshold)
+    sentence = _delete_short_long_words(sentence, length_threshold)
     return ' '.join(sentence.split())
 
-def eng_clean_text(text: str, length_threshold: int) -> str:
+def eng_clean_text(text: str, length_threshold: tuple) -> str:
     '''
     Clean text
-    
+
     Parameters
     ----------
     text : str
     length_threshold: int
-    
+
     Returns
     -------
     text : list
@@ -428,64 +458,40 @@ def eng_clean_text(text: str, length_threshold: int) -> str:
             clean_sentences.append(clean_sentence)
     return clean_sentences
 
-def nltk_pos_tagger(tag: str) -> str:
-    '''
-    Get nltk word tag
-    
-    Parameters
-    ----------
-    tag : str
-    
-    Returns
-    -------
-    nltk_tag : list
-    Returns nltk tag or None
-    '''
-    if tag.startswith('J'):
-        return wordnet.ADJ
-    elif tag.startswith('V'):
-        return wordnet.VERB
-    elif tag.startswith('N'):
-        return wordnet.NOUN
-    elif tag.startswith('R'):
-        return wordnet.ADV
-    else:
-        return None
 
-def lemmatize_sentence(sentence: str) -> str:
+def lemmatize_sentence(sentence: str, lemmatizer) -> str:
     '''
     Lemmatize text
-    
+
     Parameters
     ----------
     text : str
-    
+
     Returns
     -------
     text : str
     Lemmatized text
     '''
-    lemmatizer = WordNetLemmatizer()
-    nltk_tagged = nltk.pos_tag(nltk.word_tokenize(sentence))
-    wordnet_tagged = map(lambda x: (x[0], nltk_pos_tagger(x[1])), nltk_tagged)
+    pos_tags = ['ADV', 'NOUN', 'ADJ', 'VERB']
     lemmatized_sentence = []
-    for word, tag in wordnet_tagged:
-        if tag:
-            lemmatized_sentence.append(lemmatizer.lemmatize(word, tag))
-        else:
-            lemmatized_sentence.append(word)
+    for word in sentence.split():
+        doc = lemmatizer(word).to_json()
+        blob_word = Word(doc['tokens'][0]['lemma'])
+        word_pos = doc['tokens'][0]['pos']
+        if word_pos in word_pos and blob_word.define():
+            lemmatized_sentence.append(doc['tokens'][0]['lemma'])
     return " ".join(lemmatized_sentence)
 
-def eng_preprocess_text(text: str, stopwords: list, length_threshold: int) -> str:
+def eng_preprocess_text(text: str, stopwords: list, length_threshold: tuple = (2, 30)) -> str:
     '''
     Preprocess text
-    
+
     Parameters
     ----------
     text : str
     stopwords : list
     length_threshold : int
-    
+
     Returns
     -------
     text : list
@@ -494,7 +500,7 @@ def eng_preprocess_text(text: str, stopwords: list, length_threshold: int) -> st
     text = ' . '.join(eng_clean_text(text, length_threshold))
     output = []
     for sentence in text.split(sep=' . '):
-        sentence = lemmatize_sentence(sentence)
+        sentence = lemmatize_sentence(sentence, ENG_LEMMATIZER)
         sentence = delete_stop_words(sentence, stopwords)
         if sentence:
             output.append(sentence)
@@ -505,13 +511,13 @@ def select_text_with_threshold(dataframe: pd.DataFrame,
                                threshold: int) -> pd.DataFrame:
     '''
     Select text with some threshold
-    
+
     Parameters
     ----------
     dataframe : pd.DataFrame
     column : str
     threshold : int
-    
+
     Returns
     -------
     corpus : pd.DataFrame
@@ -524,12 +530,12 @@ def select_text_with_threshold(dataframe: pd.DataFrame,
 def remove_sep_from_text(text: str, separator: str) -> str:
     '''
     Remove separators from text
-    
+
     Parameters
     ----------
     text : str
     separator : str
-    
+
     Returns
     -------
     text : pd.DataFrame
